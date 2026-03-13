@@ -698,7 +698,12 @@ document.addEventListener('keydown', e => {
       target  = b;
     }
   }
-  if (target) popBubble(target);
+  if (target) {
+    popBubble(target);
+  } else {
+    consecutiveHits = 0;
+    playMiss();
+  }
 });
 
 function getCardAt(mx, my) {
