@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Poppy Keys - Typing Game</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1b2a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Arial Rounded MT Bold', Arial, sans-serif;
+    overflow: hidden;
+  }
+  canvas {
+    border-radius: 20px;
+    box-shadow: 0 12px 60px rgba(80, 180, 255, 0.3);
+    display: block;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// ============================================================
+//  SETUP
+// ============================================================
+const canvas = document.getElementById('game');
+const ctx    = canvas.getContext('2d');
+
+const W = 800, H = 600;
+canvas.width  = W;
+canvas.height = H;
+
+// ============================================================
+//  AUDIO  (Web Audio API — no files needed)
+// ============================================================
+let audioCtx = null;
+function getAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+function playTone(freq, type, duration, volume, startDelay = 0) {
+  const ac   = getAudio();
+  const osc  = ac.createOscillator();
+  const gain = ac.createGain();
+  osc.type = type;
+  osc.connect(gain);
+  gain.connect(ac.destination);
+  const t = ac.currentTime + startDelay;
+  osc.frequency.setValueAtTime(freq, t);
+  gain.gain.setValueAtTime(volume, t);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + duration);
+  osc.start(t);
+  osc.stop(t + duration + 0.01);
+}
+
+function playPop(pitch = 1) {
+  playTone(500 * pitch, 'sine',     0.08, 0.35);
+  playTone(900 * pitch, 'triangle', 0.06, 0.15);
+}
+function playMiss()  { playTone(180, 'sawtooth', 0.25, 0.2); }
+function playLevelUp() {
+  [262, 330, 392, 523].forEach((f, i) => playTone(f, 'triangle', 0.18, 0.28, i * 0.13));
+}
+function playGameOver() {
+  [400, 320, 240, 160].forEach((f, i) => playTone(f, 'sawtooth', 0.22, 0.18, i * 0.16));
+}
+
+// ============================================================
+//  CONSTANTS & CONFIG
+// ============================================================
+const BUBBLE_COLORS = [
+  { fill: '#FF6B9D', dark: '#C94875', shine: '#FFB3D1' },
+  { fill: '#FF8C42', dark: '#C4611F', shine: '#FFBF8A' },
+  { fill: '#FFD166', dark: '#C49A2E', shine: '#FFF0A3' },
+  { fill: '#06D6A0', dark: '#039970', shine: '#7EECD3' },
+  { fill: '#118AB2', dark: '#0A5E7A', shine: '#6BC8E8' },
+  { fill: '#9B5DE5', dark: '#6A30AF', shine: '#CCA8F5' },
+  { fill: '#F72585', dark: '#A8005E', shine: '#FB8BBF' },
+  { fill: '#4CC9F0', dark: '#2195BA', shine: '#A6E5F9' },
+];
+
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const POPS_PER_LEVEL = 10;
+
+// ============================================================
+//  GAME STATE
+// ============================================================
+let state          = 'start'; // 'start' | 'playing' | 'gameover'
+let score          = 0;
+let lives          = 3;
+let level          = 1;
+let popsThisLevel  = 0;
+let highScore      = 0;
+let frame          = 0;
+let spawnTimer     = 0;
+let bubbles        = [];
+let particles      = [];
+let floatingTexts  = [];
+let clouds         = [];
+let screenShake    = 0;
+let bubbleId       = 0;
+let showLevelBurst = 0;
+
+function spawnInterval() { return Math.max(38, 95 - (level - 1) * 7); }
+function bubbleSpeed()   { return 0.55 + (level - 1) * 0.18 + Math.random() * 0.35; }
+
+// ============================================================
+//  CLOUDS
+// ============================================================
+function initClouds() {
+  clouds = [];
+  for (let i = 0; i < 6; i++) {
+    clouds.push({
+      x:     Math.random() * W,
+      y:     40 + Math.random() * 220,
+      speed: 0.15 + Math.random() * 0.25,
+      scale: 0.4 + Math.random() * 0.9,
+      alpha: 0.25 + Math.random() * 0.25,
+    });
+  }
+}
+
+function updateClouds() {
+  for (const c of clouds) {
+    c.x += c.speed;
+    if (c.x > W + 120 * c.scale) c.x = -120 * c.scale;
+  }
+}
+
+function drawCloud(c) {
+  ctx.save();
+  ctx.globalAlpha = c.alpha;
+  ctx.fillStyle = 'white';
+  ctx.translate(c.x, c.y);
+  ctx.scale(c.scale, c.scale);
+  const puffs = [
+    [0, 0, 30], [38, -10, 26], [68, 0, 30],
+    [18, 12, 22], [50, 12, 22],
+  ];
+  ctx.beginPath();
+  for (const [px, py, pr] of puffs) ctx.arc(px, py, pr, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ============================================================
+//  BUBBLES
+// ============================================================
+function spawnBubble() {
+  const color  = BUBBLE_COLORS[Math.floor(Math.random() * BUBBLE_COLORS.length)];
+  const letter = LETTERS[Math.floor(Math.random() * LETTERS.length)];
+  const radius = 36 + Math.floor(Math.random() * 14);
+  bubbles.push({
+    id:          bubbleId++,
+    x:           radius + Math.random() * (W - radius * 2),
+    y:           H + radius + 10,
+    letter,
+    color,
+    radius,
+    speed:       bubbleSpeed(),
+    wobble:      Math.random() * Math.PI * 2,
+    wobbleSpeed: 0.018 + Math.random() * 0.02,
+    wobbleAmp:   0.6 + Math.random() * 1.6,
+    popping:     false,
+    popT:        0,
+  });
+}
+
+function popBubble(b) {
+  b.popping = true;
+  spawnParticles(b.x, b.y, b.color);
+  spawnFloatText(b.x, b.y - b.radius - 5, '+10', '#FFD166');
+  score += 10;
+  popsThisLevel++;
+  playPop(0.9 + Math.random() * 0.3);
+
+  if (popsThisLevel >= POPS_PER_LEVEL) {
+    level++;
+    popsThisLevel = 0;
+    showLevelBurst = 90;
+    playLevelUp();
+  }
+}
+
+function updateBubbles() {
+  // Spawn
+  spawnTimer++;
+  if (spawnTimer >= spawnInterval()) {
+    spawnTimer = 0;
+    spawnBubble();
+  }
+
+  const dead = [];
+  for (const b of bubbles) {
+    if (b.popping) {
+      b.popT += 0.09;
+      if (b.popT >= 1) dead.push(b);
+    } else {
+      b.wobble += b.wobbleSpeed;
+      b.x += Math.sin(b.wobble) * b.wobbleAmp;
+      b.x  = Math.max(b.radius, Math.min(W - b.radius, b.x));
+      b.y -= b.speed;
+
+      if (b.y + b.radius < 0) {
+        dead.push(b);
+        loseLife();
+      }
+    }
+  }
+  bubbles = bubbles.filter(b => !dead.includes(b));
+}
+
+function drawBubble(b) {
+  const scale = b.popping ? 1 + b.popT * 0.55 : 1;
+  const alpha = b.popping ? 1 - b.popT         : 1;
+  const r     = b.radius * scale;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Drop shadow
+  ctx.shadowColor   = 'rgba(0,0,0,0.22)';
+  ctx.shadowBlur    = 10;
+  ctx.shadowOffsetY = 5;
+
+  // Body
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = b.color.fill;
+  ctx.fill();
+
+  ctx.shadowColor = 'transparent';
+
+  // Rim stroke
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+  ctx.strokeStyle = b.color.dark;
+  ctx.lineWidth   = 2.5;
+  ctx.globalAlpha = alpha * 0.4;
+  ctx.stroke();
+  ctx.globalAlpha = alpha;
+
+  // Glossy highlight
+  const grd = ctx.createRadialGradient(
+    b.x - r * 0.28, b.y - r * 0.32, r * 0.04,
+    b.x,            b.y,            r
+  );
+  grd.addColorStop(0,   'rgba(255,255,255,0.70)');
+  grd.addColorStop(0.45,'rgba(255,255,255,0.12)');
+  grd.addColorStop(1,   'rgba(255,255,255,0.00)');
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = grd;
+  ctx.fill();
+
+  // Letter
+  if (!b.popping || b.popT < 0.45) {
+    const fs = Math.round(r * 0.88);
+    ctx.fillStyle    = 'white';
+    ctx.font         = `bold ${fs}px "Arial Rounded MT Bold", Arial`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor  = 'rgba(0,0,0,0.35)';
+    ctx.shadowBlur   = 5;
+    ctx.fillText(b.letter, b.x, b.y + fs * 0.05);
+  }
+
+  ctx.restore();
+}
+
+// ============================================================
+//  PARTICLES
+// ============================================================
+function spawnParticles(x, y, color) {
+  for (let i = 0; i < 14; i++) {
+    const angle = (Math.PI * 2 / 14) * i + (Math.random() - 0.5) * 0.4;
+    const spd   = 2.5 + Math.random() * 4;
+    particles.push({
+      x, y,
+      vx:    Math.cos(angle) * spd,
+      vy:    Math.sin(angle) * spd,
+      color: Math.random() < 0.6 ? color.fill : color.shine,
+      r:     4 + Math.random() * 5,
+      life:  1,
+      decay: 0.025 + Math.random() * 0.025,
+    });
+  }
+}
+
+function updateParticles() {
+  for (const p of particles) {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.18;
+    p.vx *= 0.97;
+    p.life -= p.decay;
+  }
+  particles = particles.filter(p => p.life > 0);
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle   = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r * p.life, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ============================================================
+//  FLOATING SCORE TEXTS
+// ============================================================
+function spawnFloatText(x, y, text, color) {
+  floatingTexts.push({ x, y, text, color, life: 1, vy: -1.6 });
+}
+
+function updateFloatTexts() {
+  for (const ft of floatingTexts) { ft.y += ft.vy; ft.life -= 0.022; }
+  floatingTexts = floatingTexts.filter(ft => ft.life > 0);
+}
+
+function drawFloatTexts() {
+  for (const ft of floatingTexts) {
+    ctx.save();
+    ctx.globalAlpha  = ft.life;
+    ctx.font         = 'bold 26px "Arial Rounded MT Bold", Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.strokeStyle  = 'rgba(0,0,0,0.4)';
+    ctx.lineWidth    = 4;
+    ctx.strokeText(ft.text, ft.x, ft.y);
+    ctx.fillStyle = ft.color;
+    ctx.fillText(ft.text, ft.x, ft.y);
+    ctx.restore();
+  }
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+function drawHUD() {
+  // Score box
+  drawPanel(14, 14, 160, 46, 'rgba(0,0,0,0.25)');
+  ctx.fillStyle    = 'white';
+  ctx.font         = 'bold 22px "Arial Rounded MT Bold", Arial';
+  ctx.textAlign    = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`Score: ${score}`, 26, 37);
+
+  // Level box (center)
+  drawPanel(W / 2 - 70, 14, 140, 46, 'rgba(0,0,0,0.25)');
+  ctx.textAlign = 'center';
+  ctx.fillText(`Level  ${level}`, W / 2, 37);
+
+  // Lives (hearts) — drawn shapes, no emoji
+  drawPanel(W - 174, 14, 160, 46, 'rgba(0,0,0,0.25)');
+  for (let i = 0; i < 3; i++) {
+    drawHeart(W - 158 + i * 46, 37, 16, i < lives);
+  }
+
+  // Level progress bar
+  const bx = W / 2 - 110, by = 68, bw = 220, bh = 9;
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  roundRect(bx, by, bw, bh, 5);
+  ctx.fill();
+  ctx.fillStyle = '#FFD166';
+  roundRect(bx, by, bw * (popsThisLevel / POPS_PER_LEVEL), bh, 5);
+  ctx.fill();
+
+  // Level burst
+  if (showLevelBurst > 0) {
+    const alpha = Math.min(1, showLevelBurst / 20);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font         = `bold 52px "Arial Rounded MT Bold", Arial`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.strokeStyle  = '#FFD166';
+    ctx.lineWidth    = 8;
+    ctx.strokeText(`Level ${level}!`, W / 2, H / 2);
+    ctx.fillStyle = 'white';
+    ctx.fillText(`Level ${level}!`, W / 2, H / 2);
+    ctx.restore();
+    showLevelBurst--;
+  }
+}
+
+// ============================================================
+//  BACKGROUND
+// ============================================================
+function drawBackground() {
+  const grd = ctx.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0,   '#c1e8fb');
+  grd.addColorStop(0.6, '#dff1fb');
+  grd.addColorStop(1,   '#eef8e8');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, W, H);
+
+  // Gentle ground stripe
+  const ground = ctx.createLinearGradient(0, H - 40, 0, H);
+  ground.addColorStop(0, 'rgba(140,210,100,0.35)');
+  ground.addColorStop(1, 'rgba(90,170,60,0.45)');
+  ctx.fillStyle = ground;
+  ctx.fillRect(0, H - 40, W, 40);
+}
+
+// ============================================================
+//  START SCREEN
+// ============================================================
+function drawStartScreen() {
+  drawBackground();
+  for (const c of clouds) drawCloud(c);
+
+  // Title card
+  const cw = 560, ch = 320;
+  const cx = W / 2 - cw / 2, cy = H / 2 - ch / 2 - 20;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.18)';
+  ctx.shadowBlur  = 20;
+  ctx.fillStyle   = 'rgba(255,255,255,0.85)';
+  roundRect(cx, cy, cw, ch, 28);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.fillStyle    = '#1a3a5c';
+  ctx.font         = 'bold 64px "Arial Rounded MT Bold", Arial';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('Poppy Keys!', W / 2, cy + 82);
+
+  ctx.font      = '22px Arial';
+  ctx.fillStyle = '#3a6a9c';
+  ctx.fillText('Press the letter shown on each bubble', W / 2, cy + 152);
+  ctx.fillText('before it floats away!', W / 2, cy + 182);
+
+  const pulse = 0.75 + 0.25 * Math.sin(frame * 0.055);
+  ctx.save();
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle   = '#FF6B9D';
+  ctx.font        = 'bold 30px "Arial Rounded MT Bold", Arial';
+  ctx.fillText('Press  SPACE  to  Start!', W / 2, cy + 248);
+  ctx.restore();
+
+  if (highScore > 0) {
+    ctx.font      = '20px Arial';
+    ctx.fillStyle = '#888';
+    ctx.fillText(`Best Score: ${highScore}`, W / 2, cy + ch + 24);
+  }
+
+  // Demo bubbles
+  const demo = [
+    { x: W/2 - 200, y: H - 80, letter: 'A', color: BUBBLE_COLORS[0], radius: 44 },
+    { x: W/2,       y: H - 50, letter: 'B', color: BUBBLE_COLORS[2], radius: 40 },
+    { x: W/2 + 200, y: H - 80, letter: 'C', color: BUBBLE_COLORS[4], radius: 44 },
+  ];
+  for (const b of demo) drawBubble({ ...b, popping: false, popT: 0 });
+}
+
+// ============================================================
+//  GAME OVER SCREEN
+// ============================================================
+function drawGameOverScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, W, H);
+
+  const pw = 420, ph = 300;
+  const px = W / 2 - pw / 2, py = H / 2 - ph / 2;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.3)';
+  ctx.shadowBlur  = 30;
+  ctx.fillStyle   = 'white';
+  roundRect(px, py, pw, ph, 28);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.fillStyle    = '#FF6B9D';
+  ctx.font         = 'bold 52px "Arial Rounded MT Bold", Arial';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('Game Over!', W / 2, py + 72);
+
+  ctx.fillStyle = '#333';
+  ctx.font      = 'bold 30px "Arial Rounded MT Bold", Arial';
+  ctx.fillText(`Your Score:  ${score}`, W / 2, py + 138);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font      = '22px Arial';
+  ctx.fillText(`Best:  ${highScore}`, W / 2, py + 182);
+
+  const pulse = 0.75 + 0.25 * Math.sin(frame * 0.055);
+  ctx.save();
+  ctx.globalAlpha = pulse;
+  ctx.fillStyle   = '#4ECDC4';
+  ctx.font        = 'bold 26px "Arial Rounded MT Bold", Arial';
+  ctx.fillText('Press  SPACE  to  Play Again!', W / 2, py + 248);
+  ctx.restore();
+}
+
+// ============================================================
+//  GAME CONTROL
+// ============================================================
+function startGame() {
+  state          = 'playing';
+  score          = 0;
+  lives          = 3;
+  level          = 1;
+  popsThisLevel  = 0;
+  showLevelBurst = 0;
+  bubbles        = [];
+  particles      = [];
+  floatingTexts  = [];
+  spawnTimer     = 0;
+  screenShake    = 0;
+}
+
+function loseLife() {
+  lives--;
+  screenShake = 14;
+  playMiss();
+  if (lives <= 0) {
+    state = 'gameover';
+    if (score > highScore) highScore = score;
+    playGameOver();
+    bubbles = [];
+  }
+}
+
+// ============================================================
+//  INPUT
+// ============================================================
+document.addEventListener('keydown', e => {
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+
+  if (state === 'start' || state === 'gameover') {
+    if (e.code === 'Space') { e.preventDefault(); startGame(); }
+    return;
+  }
+
+  if (state !== 'playing') return;
+  if (e.repeat) return;
+
+  const key = e.key.toUpperCase();
+  if (key.length !== 1 || !/[A-Z]/.test(key)) return;
+
+  // Find the bubble with this letter that is closest to escaping (lowest y)
+  let target = null, lowestY = Infinity;
+  for (const b of bubbles) {
+    if (!b.popping && b.letter === key && b.y < lowestY) {
+      lowestY = b.y;
+      target  = b;
+    }
+  }
+  if (target) popBubble(target);
+});
+
+// ============================================================
+//  HELPERS
+// ============================================================
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawPanel(x, y, w, h, color) {
+  ctx.save();
+  ctx.fillStyle = color;
+  roundRect(x, y, w, h, 12);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawHeart(cx, cy, size, filled) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.beginPath();
+  ctx.moveTo(0, size * 0.3);
+  ctx.bezierCurveTo(-size, -size * 0.2, -size, size * 0.8, 0, size * 1.1);
+  ctx.bezierCurveTo(size,  size * 0.8,   size, -size * 0.2, 0, size * 0.3);
+  ctx.fillStyle   = filled ? '#FF6B9D' : 'rgba(255,255,255,0.4)';
+  ctx.strokeStyle = filled ? '#C94875' : 'rgba(200,200,200,0.5)';
+  ctx.lineWidth   = 1.5;
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ============================================================
+//  MAIN LOOP
+// ============================================================
+function update() {
+  frame++;
+  updateClouds();
+  if (screenShake > 0) screenShake--;
+  if (state !== 'playing') return;
+  updateBubbles();
+  updateParticles();
+  updateFloatTexts();
+}
+
+function render() {
+  ctx.save();
+
+  // Screen shake
+  if (screenShake > 0) {
+    const sx = (Math.random() - 0.5) * screenShake * 0.8;
+    const sy = (Math.random() - 0.5) * screenShake * 0.8;
+    ctx.translate(sx, sy);
+  }
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (state === 'start') {
+    drawStartScreen();
+    ctx.restore();
+    return;
+  }
+
+  drawBackground();
+  for (const c of clouds) drawCloud(c);
+  drawParticles();
+  for (const b of bubbles) drawBubble(b);
+  drawFloatTexts();
+  drawHUD();
+
+  if (state === 'gameover') drawGameOverScreen();
+
+  ctx.restore();
+}
+
+function loop() {
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ============================================================
+//  START
+// ============================================================
+initClouds();
+loop();
+</script>
+</body>
+</html>
