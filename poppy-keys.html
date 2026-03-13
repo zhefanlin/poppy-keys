@@ -86,29 +86,38 @@ const BUBBLE_COLORS = [
 ];
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const POPS_PER_LEVEL = 10;
+const HITS_PER_LEVEL = 10;
+
+const DIFFICULTIES = [
+  { key: '1', id: 'easy',   label: 'Easy',   desc: 'Slow & relaxed',  baseSpeed: 0.38, spawnBase: 115, speedInc: 0.12, color: '#06D6A0', dark: '#039970', dots: 1 },
+  { key: '2', id: 'medium', label: 'Medium', desc: 'Just right',      baseSpeed: 0.55, spawnBase: 95,  speedInc: 0.18, color: '#FFD166', dark: '#C49A2E', dots: 2 },
+  { key: '3', id: 'hard',   label: 'Hard',   desc: 'Fast & furious',  baseSpeed: 0.80, spawnBase: 72,  speedInc: 0.25, color: '#FF6B9D', dark: '#C94875', dots: 3 },
+];
 
 // ============================================================
 //  GAME STATE
 // ============================================================
-let state          = 'start'; // 'start' | 'playing' | 'gameover'
-let score          = 0;
-let lives          = 3;
-let level          = 1;
-let popsThisLevel  = 0;
-let highScore      = 0;
-let frame          = 0;
-let spawnTimer     = 0;
-let bubbles        = [];
-let particles      = [];
-let floatingTexts  = [];
-let clouds         = [];
-let screenShake    = 0;
-let bubbleId       = 0;
-let showLevelBurst = 0;
+let state            = 'start'; // 'start' | 'difficulty' | 'playing' | 'gameover'
+let score            = 0;
+let lives            = 3;
+let level            = 1;
+let consecutiveHits  = 0;
+let highScore        = 0;
+let frame            = 0;
+let spawnTimer       = 0;
+let bubbles          = [];
+let particles        = [];
+let floatingTexts    = [];
+let clouds           = [];
+let screenShake      = 0;
+let bubbleId         = 0;
+let showLevelBurst   = 0;
+let difficulty       = DIFFICULTIES[1]; // default medium
+let hoveredDiff      = null;            // for difficulty screen hover
+let diffCardBounds   = [];              // [{x,y,w,h,diff}] computed each render
 
-function spawnInterval() { return Math.max(38, 95 - (level - 1) * 7); }
-function bubbleSpeed()   { return 0.55 + (level - 1) * 0.18 + Math.random() * 0.35; }
+function spawnInterval() { return Math.max(38, difficulty.spawnBase - (level - 1) * 7); }
+function bubbleSpeed()   { return difficulty.baseSpeed + (level - 1) * difficulty.speedInc + Math.random() * 0.35; }
 
 // ============================================================
 //  CLOUDS
@@ -175,14 +184,16 @@ function spawnBubble() {
 function popBubble(b) {
   b.popping = true;
   spawnParticles(b.x, b.y, b.color);
-  spawnFloatText(b.x, b.y - b.radius - 5, '+10', '#FFD166');
   score += 10;
-  popsThisLevel++;
+  consecutiveHits++;
   playPop(0.9 + Math.random() * 0.3);
 
-  if (popsThisLevel >= POPS_PER_LEVEL) {
+  const label = consecutiveHits > 1 ? `+10  x${consecutiveHits}` : '+10';
+  spawnFloatText(b.x, b.y - b.radius - 5, label, '#FFD166');
+
+  if (consecutiveHits >= HITS_PER_LEVEL) {
     level++;
-    popsThisLevel = 0;
+    consecutiveHits = 0;
     showLevelBurst = 90;
     playLevelUp();
   }
@@ -357,7 +368,7 @@ function drawHUD() {
   ctx.fillText(`Score: ${score}`, 26, 37);
 
   // Level box (center)
-  drawPanel(W / 2 - 70, 14, 140, 46, 'rgba(0,0,0,0.25)');
+  drawPanel(W / 2 - 80, 14, 160, 46, 'rgba(0,0,0,0.25)');
   ctx.textAlign = 'center';
   ctx.fillText(`Level  ${level}`, W / 2, 37);
 
@@ -367,14 +378,29 @@ function drawHUD() {
     drawHeart(W - 158 + i * 46, 37, 16, i < lives);
   }
 
-  // Level progress bar
+  // Consecutive hits progress bar
   const bx = W / 2 - 110, by = 68, bw = 220, bh = 9;
   ctx.fillStyle = 'rgba(0,0,0,0.2)';
   roundRect(bx, by, bw, bh, 5);
   ctx.fill();
-  ctx.fillStyle = '#FFD166';
-  roundRect(bx, by, bw * (popsThisLevel / POPS_PER_LEVEL), bh, 5);
+  ctx.fillStyle = difficulty.color;
+  roundRect(bx, by, bw * (consecutiveHits / HITS_PER_LEVEL), bh, 5);
   ctx.fill();
+
+  // Streak label
+  ctx.fillStyle    = 'rgba(0,0,0,0.45)';
+  ctx.font         = '13px Arial';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`Streak  ${consecutiveHits} / ${HITS_PER_LEVEL}`, W / 2, by + bh + 11);
+
+  // Difficulty badge
+  drawPanel(14, 68, 90, 26, difficulty.dark + '99');
+  ctx.fillStyle    = 'white';
+  ctx.font         = 'bold 13px Arial';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(difficulty.label.toUpperCase(), 59, 81);
 
   // Level burst
   if (showLevelBurst > 0) {
@@ -447,7 +473,7 @@ function drawStartScreen() {
   ctx.globalAlpha = pulse;
   ctx.fillStyle   = '#FF6B9D';
   ctx.font        = 'bold 30px "Arial Rounded MT Bold", Arial';
-  ctx.fillText('Press  SPACE  to  Start!', W / 2, cy + 248);
+  ctx.fillText('Press  SPACE  to  Continue!', W / 2, cy + 248);
   ctx.restore();
 
   if (highScore > 0) {
@@ -463,6 +489,106 @@ function drawStartScreen() {
     { x: W/2 + 200, y: H - 80, letter: 'C', color: BUBBLE_COLORS[4], radius: 44 },
   ];
   for (const b of demo) drawBubble({ ...b, popping: false, popT: 0 });
+}
+
+// ============================================================
+//  DIFFICULTY SCREEN
+// ============================================================
+function drawDifficultyScreen() {
+  drawBackground();
+  for (const c of clouds) drawCloud(c);
+
+  // Title
+  ctx.fillStyle    = '#1a3a5c';
+  ctx.font         = 'bold 44px "Arial Rounded MT Bold", Arial';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('Choose Your Difficulty', W / 2, 110);
+
+  ctx.font      = '20px Arial';
+  ctx.fillStyle = '#3a6a9c';
+  ctx.fillText('Level up by hitting 10 bubbles in a row without missing!', W / 2, 152);
+
+  // Cards
+  const cw = 195, ch = 240, gap = 22;
+  const totalW = 3 * cw + 2 * gap;
+  const startX = W / 2 - totalW / 2;
+  const cardY  = 188;
+
+  diffCardBounds = [];
+
+  DIFFICULTIES.forEach((diff, i) => {
+    const cx  = startX + i * (cw + gap);
+    const isHovered = hoveredDiff === diff;
+
+    diffCardBounds.push({ x: cx, y: cardY, w: cw, h: ch, diff });
+
+    // Card shadow + body
+    ctx.save();
+    if (isHovered) {
+      ctx.shadowColor = diff.color;
+      ctx.shadowBlur  = 22;
+    } else {
+      ctx.shadowColor = 'rgba(0,0,0,0.18)';
+      ctx.shadowBlur  = 12;
+    }
+    ctx.fillStyle = isHovered ? 'white' : 'rgba(255,255,255,0.88)';
+    roundRect(cx, cardY, cw, ch, 20);
+    ctx.fill();
+    ctx.restore();
+
+    // Colored top banner
+    ctx.save();
+    ctx.fillStyle = diff.color;
+    roundRect(cx, cardY, cw, 64, 20);
+    ctx.fill();
+    // square off bottom of banner
+    ctx.fillRect(cx, cardY + 44, cw, 20);
+    ctx.restore();
+
+    // Difficulty label in banner
+    ctx.fillStyle    = 'white';
+    ctx.font         = 'bold 26px "Arial Rounded MT Bold", Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(diff.label, cx + cw / 2, cardY + 34);
+
+    // Key badge
+    ctx.save();
+    ctx.fillStyle = diff.dark;
+    roundRect(cx + cw / 2 - 20, cardY + 74, 40, 40, 10);
+    ctx.fill();
+    ctx.fillStyle    = 'white';
+    ctx.font         = 'bold 24px "Arial Rounded MT Bold", Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(diff.key, cx + cw / 2, cardY + 94);
+    ctx.restore();
+
+    // Description
+    ctx.fillStyle    = '#444';
+    ctx.font         = '17px Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(diff.desc, cx + cw / 2, cardY + 140);
+
+    // Speed dots
+    const dotR = 8, dotGap = 22, dotsY = cardY + 175;
+    const dotsStartX = cx + cw / 2 - ((3 - 1) * dotGap) / 2;
+    for (let d = 0; d < 3; d++) {
+      ctx.beginPath();
+      ctx.arc(dotsStartX + d * dotGap, dotsY, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = d < diff.dots ? diff.color : 'rgba(0,0,0,0.12)';
+      ctx.fill();
+    }
+
+    // Click / press hint
+    ctx.fillStyle    = '#aaa';
+    ctx.font         = '14px Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`Press ${diff.key}  or  click`, cx + cw / 2, cardY + ch - 18);
+  });
 }
 
 // ============================================================
@@ -508,22 +634,24 @@ function drawGameOverScreen() {
 // ============================================================
 //  GAME CONTROL
 // ============================================================
-function startGame() {
-  state          = 'playing';
-  score          = 0;
-  lives          = 3;
-  level          = 1;
-  popsThisLevel  = 0;
-  showLevelBurst = 0;
-  bubbles        = [];
-  particles      = [];
-  floatingTexts  = [];
-  spawnTimer     = 0;
-  screenShake    = 0;
+function startGame(diff) {
+  difficulty       = diff;
+  state            = 'playing';
+  score            = 0;
+  lives            = 3;
+  level            = 1;
+  consecutiveHits  = 0;
+  showLevelBurst   = 0;
+  bubbles          = [];
+  particles        = [];
+  floatingTexts    = [];
+  spawnTimer       = 0;
+  screenShake      = 0;
 }
 
 function loseLife() {
   lives--;
+  consecutiveHits = 0;  // streak broken on any miss
   screenShake = 14;
   playMiss();
   if (lives <= 0) {
@@ -540,8 +668,19 @@ function loseLife() {
 document.addEventListener('keydown', e => {
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
 
-  if (state === 'start' || state === 'gameover') {
-    if (e.code === 'Space') { e.preventDefault(); startGame(); }
+  if (state === 'start') {
+    if (e.code === 'Space') { e.preventDefault(); state = 'difficulty'; }
+    return;
+  }
+
+  if (state === 'gameover') {
+    if (e.code === 'Space') { e.preventDefault(); state = 'difficulty'; }
+    return;
+  }
+
+  if (state === 'difficulty') {
+    const match = DIFFICULTIES.find(d => d.key === e.key);
+    if (match) startGame(match);
     return;
   }
 
@@ -560,6 +699,30 @@ document.addEventListener('keydown', e => {
     }
   }
   if (target) popBubble(target);
+});
+
+function getCardAt(mx, my) {
+  return diffCardBounds.find(b => mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) || null;
+}
+
+canvas.addEventListener('mousemove', e => {
+  if (state !== 'difficulty') { hoveredDiff = null; return; }
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top)  * (H / rect.height);
+  const card = getCardAt(mx, my);
+  hoveredDiff = card ? card.diff : null;
+  canvas.style.cursor = card ? 'pointer' : 'default';
+});
+
+canvas.addEventListener('click', e => {
+  if (state !== 'difficulty') return;
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  const rect = canvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (W / rect.width);
+  const my = (e.clientY - rect.top)  * (H / rect.height);
+  const card = getCardAt(mx, my);
+  if (card) startGame(card.diff);
 });
 
 // ============================================================
@@ -629,6 +792,12 @@ function render() {
 
   if (state === 'start') {
     drawStartScreen();
+    ctx.restore();
+    return;
+  }
+
+  if (state === 'difficulty') {
+    drawDifficultyScreen();
     ctx.restore();
     return;
   }
